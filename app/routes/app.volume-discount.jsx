@@ -78,13 +78,20 @@ export const action = async ({ request }) => {
         productIds
     };
 
-    // Update the metafield on the Discount Node
+    // 1. Update the metafield on the Discount Node (for the Function)
     const response = await admin.graphql(
         `#graphql
-    mutation UpdateDiscountMetafield($ownerId: ID!, $value: String!) {
+    mutation UpdateDiscountMetafield($ownerId: ID!, $value: String!, $shopId: ID!) {
       metafieldsSet(metafields: [
         {
           ownerId: $ownerId
+          namespace: "volume-discount"
+          key: "function-configuration"
+          type: "json"
+          value: $value
+        },
+        {
+          ownerId: $shopId
           namespace: "volume-discount"
           key: "function-configuration"
           type: "json"
@@ -100,6 +107,7 @@ export const action = async ({ request }) => {
         {
             variables: {
                 ownerId: discountId,
+                shopId: (await admin.graphql(`{ shop { id } }`).then(r => r.json())).data.shop.id,
                 value: JSON.stringify(configuration)
             }
         }
