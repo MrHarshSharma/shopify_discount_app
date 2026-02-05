@@ -1,0 +1,55 @@
+{% assign config = shop.metafields['volume-discount']['function-configuration'].value %}
+
+{% if config %}
+  {% assign show_banner = true %}
+  {% assign product_id = product.id | append: "" %} 
+  
+  {% if config.productIds.size > 0 %}
+    {% assign show_banner = false %}
+    {% for pid in config.productIds %}
+      {% if pid contains product_id %}
+         {% assign show_banner = true %}
+         {% break %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+
+  {% if show_banner %}
+    <div class="volume-discount-banner" style="background-color: {{ block.settings.color }}; padding: 10px; border-radius: 5px; margin: 10px 0;">
+      <p style="margin: 0; font-weight: bold; color: {{ block.settings.text_color }};">
+        {{ block.settings.message 
+           | replace: '[quantity]', config.quantity 
+           | replace: '[percentage]', config.percentage 
+        }}
+      </p>
+    </div>
+  {% endif %}
+{% endif %}
+
+{% schema %}
+{
+  "name": "Volume Discount Banner",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "message",
+      "label": "Message",
+      "default": "🔥 Buy [quantity], Get [percentage]% Off!",
+      "info": "Use [quantity] and [percentage] as placeholders."
+    },
+    {
+      "type": "color",
+      "id": "color",
+      "label": "Background Color",
+      "default": "#f4f6f8"
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Text Color",
+      "default": "#000000"
+    }
+  ]
+}
+{% endschema %}
