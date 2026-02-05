@@ -21,8 +21,6 @@ export function cartLinesDiscountsGenerateRun(input) {
     return { operations: [] };
   }
 
-  const operations = [];
-
   // Check if product discounts are enabled
   const hasProductDiscountClass = input.discount.discountClasses.includes(
     DiscountClass.Product,
@@ -32,22 +30,34 @@ export function cartLinesDiscountsGenerateRun(input) {
     return { operations: [] };
   }
 
-  // Iterate through each cart line
+  // Collect all targets that meet the criteria
+  const targets = [];
+
   input.cart.lines.forEach((line) => {
     // Apply 10% discount if quantity is 2 or more
     if (line.quantity >= 2) {
-      operations.push({
+      targets.push({
+        cartLine: {
+          id: line.id,
+        },
+      });
+    }
+  });
+
+  // If no lines qualify, return empty operations
+  if (targets.length === 0) {
+    return { operations: [] };
+  }
+
+  // Return a single operation with all targets
+  return {
+    operations: [
+      {
         productDiscountsAdd: {
           candidates: [
             {
               message: 'Buy 2, get 10% off',
-              targets: [
-                {
-                  cartLine: {
-                    id: line.id,
-                  },
-                },
-              ],
+              targets: targets,
               value: {
                 percentage: {
                   value: 10, // 10% discount
@@ -57,11 +67,7 @@ export function cartLinesDiscountsGenerateRun(input) {
           ],
           selectionStrategy: ProductDiscountSelectionStrategy.First,
         },
-      });
-    }
-  });
-
-  return {
-    operations,
+      },
+    ],
   };
 }
