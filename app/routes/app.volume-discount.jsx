@@ -1,147 +1,282 @@
-import { Card, Page, Layout, Text, Banner, BlockStack, InlineStack, Badge, Button } from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
-import { useFetcher } from "@remix-run/react";
-import { useEffect, useState } from "react";
+import {
+    Page,
+    Layout,
+    Card,
+    Button,
+    FormLayout,
+    TextField,
+    BlockStack,
+    Text,
+    Banner,
+    Box,
+    List,
+    InlineStack,
+} from "@shopify/polaris";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
+import { useLoaderData, useSubmit, useNavigation, useActionData } from "@remix-run/react";
+import { authenticate } from "../shopify.server";
+import { json } from "@remix-run/node";
+import { useState, useEffect } from "react";
+
+// Loader to fetch current settings from the DISCOUNT OBJECT
+export const loader = async ({ request }) => {
+    const { admin } = await authenticate.admin(request);
+
+    // Find the volume discount created by this app
+    const response = await admin.graphql(
+        `#graphql
+    query {
+      discountNodes(first: 10, query: "title:'Volume Discount - Buy 2 Get 10% Off'") {
+        nodes {
+          id
+          metafield(namespace: "volume-discount", key: "function-configuration") {
+            value
+          }
+          discount {
+            ... on DiscountAutomaticApp {
+              title
+            }
+          }
+        }
+      }
+    }`
+    );
+
+    const data = await response.json();
+    const discountNode = data.data.discountNodes.nodes[0];
+
+    // Default config if not found or no metafield
+    const defaultConfig = { quantity: 2, percentage: 10, productIds: [] };
+    const config = discountNode?.metafield?.value
+        ? JSON.parse(discountNode.metafield.value)
+        : defaultConfig;
+
+    return json({
+        config,
+        discountId: discountNode?.id,
+        found: !!discountNode
+    });
+};
+
+// Action to save settings to the DISCOUNT OBJECT
+export const action = async ({ request }) => {
+    const { admin } = await authenticate.admin(request);
+    const formData = await request.formData();
+
+    const discountId = formData.get("discountId");
+    const quantity = parseInt(formData.get("quantity"));
+    const percentage = parseFloat(formData.get("percentage"));
+    const productIds = JSON.parse(formData.get("productIds") || "[]");
+
+    if (!discountId) {
+        return json({ errors: [{ message: "Discount not found. Please activate it first." }] }, { status: 400 });
+    }
+
+    const configuration = {
+        quantity,
+        percentage,
+        productIds
+    };
+
+    // Update the metafield on the Discount Node
+    const response = await admin.graphql(
+        `#graphql
+    mutation UpdateDiscountMetafield($ownerId: ID!, $value: String!) {
+      metafieldsSet(metafields: [
+        {
+          ownerId: $ownerId
+          namespace: "volume-discount"
+          key: "function-configuration"
+          type: "json"
+          value: $value
+        }
+      ]) {
+        userErrors {
+          field
+          message
+        }
+      }
+    }`,
+        {
+            variables: {
+                ownerId: discountId,
+                value: JSON.stringify(configuration)
+            }
+        }
+    );
+
+    const responseJson = await response.json();
+    if (responseJson.data.metafieldsSet.userErrors.length > 0) {
+        return json({ errors: responseJson.data.metafieldsSet.userErrors }, { status: 400 });
+    }
+
+    return json({ success: true, config: configuration });
+};
 
 export default function VolumeDiscountPage() {
-    const fetcher = useFetcher();
-    const [isActivated, setIsActivated] = useState(false);
-    const isActivating = fetcher.state === "submitting";
+    const { config, discountId, found } = useLoaderData();
+    const actionData = useActionData();
+    const submit = useSubmit();
+    const navigation = useNavigation();
+    const shopify = useAppBridge();
+
+    const [quantity, setQuantity] = useState(config.quantity);
+    const [percentage, setPercentage] = useState(config.percentage);
+    const [selectedProducts, setSelectedProducts] = useState(config.productIds || []);
+
+    const isSaving = navigation.state === "submitting";
+    const [showSaveBanner, setShowSaveBanner] = useState(false);
 
     useEffect(() => {
-        if (fetcher.data?.success) {
-            setIsActivated(true);
+        if (actionData?.success) {
+            setShowSaveBanner(true);
+            shopify.toast.show("Settings saved successfully");
         }
-    }, [fetcher.data]);
+    }, [actionData, shopify]);
 
-    const activateDiscount = () => {
-        fetcher.submit({}, { method: "POST", action: "/app/activate-discount" });
+    const handleSave = () => {
+        submit(
+            {
+                discountId,
+                quantity,
+                percentage,
+                productIds: JSON.stringify(selectedProducts)
+            },
+            { method: "POST" }
+        );
     };
+
+    const selectProducts = async () => {
+        const ids = await shopify.resourcePicker({
+            type: "product",
+            multiple: true,
+            action: "select",
+            selectionIds: selectedProducts.map(id => ({ id })),
+        });
+
+        if (ids) {
+            setSelectedProducts(ids.map(p => p.id));
+        }
+    };
+
+    const clearProducts = () => {
+        setSelectedProducts([]);
+    };
+
+    if (!found) {
+        return (
+            <Page>
+                <TitleBar title="Configure Volume Discount" />
+                <Layout>
+                    <Layout.Section>
+                        <Banner tone="warning" title="Discount Not Found">
+                            <p>Please activate the discount first using the Activate button on the dashboard.</p>
+                        </Banner>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
 
     return (
         <Page>
-            <TitleBar title="Volume Discount Configuration" />
+            <TitleBar title="Configure Volume Discount" />
+
             <Layout>
+                {showSaveBanner && (
+                    <Layout.Section>
+                        <Banner
+                            title="Settings saved"
+                            tone="success"
+                            onDismiss={() => setShowSaveBanner(false)}
+                        />
+                    </Layout.Section>
+                )}
+
                 <Layout.Section>
-                    {isActivated || fetcher.data?.success ? (
-                        <Banner title="Discount Activated Successfully!" tone="success">
-                            <p>Your "Buy 2, get 10% off" discount is now active. Test it by adding 2+ items to cart and going to checkout.</p>
-                        </Banner>
-                    ) : (
-                        <Banner title="Activate Your Discount" tone="warning">
-                            <BlockStack gap="300">
-                                <Text as="p">Click the button below to activate the volume discount function.</Text>
-                                <Button
-                                    onClick={activateDiscount}
-                                    loading={isActivating}
-                                    variant="primary"
-                                >
-                                    {isActivating ? "Activating..." : "Activate Discount Now"}
+                    <Card>
+                        <BlockStack gap="400">
+                            <Text variant="headingMd" as="h2">Discount Rules</Text>
+                            <Text as="p" tone="subdued">
+                                Define the rules for your "Buy X, Get Y% Off" discount.
+                            </Text>
+
+                            <FormLayout>
+                                <FormLayout.Group>
+                                    <TextField
+                                        label="Minimum Quantity"
+                                        type="number"
+                                        value={String(quantity)}
+                                        onChange={(val) => setQuantity(parseInt(val) || 0)}
+                                        autoComplete="off"
+                                        suffix="items"
+                                        helpText="Customer must add at least this many items to cart."
+                                    />
+                                    <TextField
+                                        label="Discount Percentage"
+                                        type="number"
+                                        value={String(percentage)}
+                                        onChange={(val) => setPercentage(parseFloat(val) || 0)}
+                                        autoComplete="off"
+                                        suffix="%"
+                                        helpText="The percentage discount to apply."
+                                    />
+                                </FormLayout.Group>
+                            </FormLayout>
+                        </BlockStack>
+                    </Card>
+                </Layout.Section>
+
+                <Layout.Section>
+                    <Card>
+                        <BlockStack gap="400">
+                            <InlineStack align="space-between">
+                                <Text variant="headingMd" as="h2">Eligible Products</Text>
+                                {selectedProducts.length > 0 && (
+                                    <Button variant="plain" tone="critical" onClick={clearProducts}>Clear selection</Button>
+                                )}
+                            </InlineStack>
+
+                            <Text as="p" tone="subdued">
+                                {selectedProducts.length === 0
+                                    ? "Currently applies to ALL products in the store."
+                                    : `Currently applies to ${selectedProducts.length} selected product(s).`}
+                            </Text>
+
+                            <Box>
+                                <Button onClick={selectProducts}>
+                                    {selectedProducts.length === 0 ? "Select Specific Products" : "Change Selection"}
                                 </Button>
-                            </BlockStack>
-                        </Banner>
-                    )}
+                            </Box>
 
-                    {fetcher.data?.errors && (
-                        <Banner tone="critical">
-                            <BlockStack gap="200">
-                                <Text as="p">Error activating discount:</Text>
-                                {fetcher.data.errors.map((error, index) => (
-                                    <Text as="p" key={index}>• {error.message}</Text>
-                                ))}
-                            </BlockStack>
-                        </Banner>
-                    )}
-                </Layout.Section>
-
-                <Layout.Section>
-                    <Card>
-                        <BlockStack gap="400">
-                            <Text variant="headingMd" as="h2">
-                                Current Discount Settings
-                            </Text>
-
-                            <BlockStack gap="200">
-                                <InlineStack align="space-between">
-                                    <Text as="span" fontWeight="semibold">Minimum Quantity:</Text>
-                                    <Badge tone="info">2 items</Badge>
-                                </InlineStack>
-
-                                <InlineStack align="space-between">
-                                    <Text as="span" fontWeight="semibold">Discount Percentage:</Text>
-                                    <Badge tone="success">10%</Badge>
-                                </InlineStack>
-
-                                <InlineStack align="space-between">
-                                    <Text as="span" fontWeight="semibold">Applies to:</Text>
-                                    <Badge>All products</Badge>
-                                </InlineStack>
-
-                                <InlineStack align="space-between">
-                                    <Text as="span" fontWeight="semibold">Discount Type:</Text>
-                                    <Badge>Automatic</Badge>
-                                </InlineStack>
-                            </BlockStack>
+                            {selectedProducts.length > 0 && (
+                                <Box paddingBlockStart="200">
+                                    <Text variant="bodySm" tone="subdued">Selected Product IDs:</Text>
+                                    <List type="bullet">
+                                        {selectedProducts.slice(0, 5).map(id => (
+                                            <List.Item key={id}>{id.split('/').pop()}</List.Item>
+                                        ))}
+                                        {selectedProducts.length > 5 && <List.Item>...and {selectedProducts.length - 5} more</List.Item>}
+                                    </List>
+                                </Box>
+                            )}
                         </BlockStack>
                     </Card>
                 </Layout.Section>
 
                 <Layout.Section>
-                    <Card>
-                        <BlockStack gap="400">
-                            <Text variant="headingMd" as="h2">
-                                How It Works
-                            </Text>
-
-                            <BlockStack gap="200">
-                                <Text as="p">
-                                    ✅ When a customer adds <strong>2 or more</strong> of any product to their cart
-                                </Text>
-                                <Text as="p">
-                                    ✅ A <strong>10% discount</strong> is automatically applied at checkout
-                                </Text>
-                                <Text as="p">
-                                    ✅ The discount shows as "Buy 2, get 10% off"
-                                </Text>
-                                <Text as="p">
-                                    ✅ Works on all products in your store
-                                </Text>
-                            </BlockStack>
-                        </BlockStack>
-                    </Card>
-                </Layout.Section>
-
-                <Layout.Section>
-                    <Card>
-                        <BlockStack gap="400">
-                            <Text variant="headingMd" as="h2">
-                                Testing Your Discount
-                            </Text>
-
-                            <BlockStack gap="200">
-                                <Text as="p">
-                                    1. Visit your store: <strong>hampers-5041.myshopify.com</strong>
-                                </Text>
-                                <Text as="p">
-                                    2. Add 2 or more of any product to cart
-                                </Text>
-                                <Text as="p">
-                                    3. Proceed to <strong>Checkout</strong>
-                                </Text>
-                                <Text as="p">
-                                    4. Verify the 10% discount appears
-                                </Text>
-                            </BlockStack>
-                        </BlockStack>
-                    </Card>
-                </Layout.Section>
-
-                <Layout.Section>
-                    <Banner tone="info">
-                        <p>
-                            <strong>Note:</strong> Discounts only appear at checkout, not in the cart page. This is standard Shopify behavior.
-                        </p>
-                    </Banner>
+                    <Box paddingBlockStart="200">
+                        <InlineStack align="end">
+                            <Button
+                                variant="primary"
+                                size="large"
+                                onClick={handleSave}
+                                loading={isSaving}
+                            >
+                                Save Configuration
+                            </Button>
+                        </InlineStack>
+                    </Box>
                 </Layout.Section>
             </Layout>
         </Page>

@@ -1,9 +1,7 @@
 import {
   DiscountClass,
-  OrderDiscountSelectionStrategy,
   ProductDiscountSelectionStrategy,
 } from '../generated/api';
-
 
 /**
   * @typedef {import("../generated/api").CartInput} RunInput
@@ -14,54 +12,83 @@ import {
   * @param {RunInput} input
   * @returns {CartLinesDiscountsGenerateRunResult}
   */
-
 export function cartLinesDiscountsGenerateRun(input) {
   // Return empty if no cart lines
   if (!input.cart.lines.length) {
     return { operations: [] };
   }
 
-  const operations = [];
+  // Get configuration from metafield
+  let config = { quantity: 2, percentage: 10, productIds: [] };
+  const metafieldValue = input.discount?.metafield?.value;
 
-  // Check if product discounts are enabled
-  const hasProductDiscountClass = input.discount.discountClasses.includes(
-    DiscountClass.Product,
-  );
+  if (metafieldValue) {
+    try {
+      config = JSON.parse(metafieldValue);
+    } catch (e) {
+      console.error("Failed to parse config metafield", e);
+    }
+  }
 
-  if (!hasProductDiscountClass) {
+  const targets = [];
+  console.error("Starting Strict Per-Product Check");
+  console.error(`Config: minQty=${config.quantity}, matchedIDs=${JSON.stringify(config.productIds)}`);
+
+  // Iterate through cart lines
+  input.cart.lines.forEach((line) => {
+    // 1. Check Product Eligibility
+    let isEligibleProduct = true;
+    const productId = line.merchandise?.product?.id;
+
+    if (config.productIds && config.productIds.length > 0) {
+      if (!productId || !config.productIds.includes(productId)) {
+        isEligibleProduct = false;
+        console.error(`Line ${line.id} (Product: ${productId}) -> NOT ELIGIBLE (ID mismatch)`);
+      }
+    }
+
+    // 2. Check Quantity Requirement individually
+    if (isEligibleProduct) {
+      if (line.quantity >= config.quantity) {
+        console.error(`Line ${line.id} (Product: ${productId}) -> ELIGIBLE & QUALIFIES (Qty: ${line.quantity} >= ${config.quantity})`);
+
+        // Add as a target for the discount
+        targets.push({
+          cartLine: {
+            id: line.id
+          }
+        });
+      } else {
+        console.error(`Line ${line.id} (Product: ${productId}) -> ELIGIBLE BUT FAILS QTY (Qty: ${line.quantity} < ${config.quantity})`);
+      }
+    }
+  });
+
+  // If no lines qualify individually, return empty operations
+  if (targets.length === 0) {
+    console.error("No lines qualified for discount.");
     return { operations: [] };
   }
 
-  // Iterate through each cart line
-  input.cart.lines.forEach((line) => {
-    // Apply 10% discount if quantity is 2 or more
-    if (line.quantity >= 2) {
-      operations.push({
+  // Return a single operation with all qualifying targets
+  return {
+    operations: [
+      {
         productDiscountsAdd: {
           candidates: [
             {
-              message: 'Buy 2, get 10% off',
-              targets: [
-                {
-                  cartLine: {
-                    id: line.id,
-                  },
-                },
-              ],
+              message: `Buy ${config.quantity}, get ${config.percentage}% off`,
+              targets: targets,
               value: {
                 percentage: {
-                  value: 10, // 10% discount
+                  value: config.percentage,
                 },
               },
             },
           ],
           selectionStrategy: ProductDiscountSelectionStrategy.First,
         },
-      });
-    }
-  });
-
-  return {
-    operations,
+      },
+    ],
   };
 }
